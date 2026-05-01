@@ -1,6 +1,6 @@
 import asyncio
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+import playwright_stealth
 
 async def run_scraper():
     async with async_playwright() as p:
@@ -8,29 +8,35 @@ async def run_scraper():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         
-        # Aplicamos el modo stealth
-        await stealth_async(page) 
+        # Aplicamos el modo stealth de la forma correcta
+        await playwright_stealth.stealth_async(page) 
 
-        # Intentamos entrar a la búsqueda de Barrio Jara
+        # URL de búsqueda
         url = "https://www.facebook.com/groups/inmobiliariaparaguay/search/?q=Barrio%20Jara"
         
-        print(f"Abriendo: {url}")
-        await page.goto(url)
-        await asyncio.sleep(10) # Damos tiempo extra para cargar
-
-        # Buscamos los posts
-        posts = await page.query_selector_all("div[role='article']")
+        print(f"Iniciando navegación en: {url}")
         
-        if len(posts) == 0:
-            print("No se encontraron publicaciones. Es probable que Facebook pida login.")
-        else:
-            print(f"¡Éxito! Se encontraron {len(posts)} publicaciones.")
-            for i, post in enumerate(posts[:3]):
-                texto = await post.inner_text()
-                print(f"--- POST {i+1} ---")
-                print(texto[:150])
+        try:
+            await page.goto(url, wait_until="networkidle")
+            await asyncio.sleep(5) # Espera manual para carga de contenido dinámico
+
+            # Buscamos los contenedores de los posts
+            posts = await page.query_selector_all("div[role='article']")
+            
+            if not posts:
+                print("Aviso: No se detectaron publicaciones. Facebook podría estar bloqueando el acceso anónimo.")
+            else:
+                print(f"Éxito: Se encontraron {len(posts)} publicaciones potenciales.")
+                for i, post in enumerate(posts[:3]):
+                    texto = await post.inner_text()
+                    print(f"--- CONTENIDO POST {i+1} ---")
+                    print(texto[:150]) # Solo los primeros 150 caracteres
+
+        except Exception as e:
+            print(f"Error durante la navegación: {e}")
 
         await browser.close()
+        print("Proceso finalizado.")
 
 if __name__ == "__main__":
     asyncio.run(run_scraper())
