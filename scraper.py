@@ -1,16 +1,17 @@
 import asyncio
 import os
+import json
 from playwright.async_api import async_playwright
 
 C_USER = os.getenv("FB_C_USER")
 XS = os.getenv("FB_XS")
 
 async def run_scraper():
-    print("Iniciando motor de Playwright con sesión de usuario...")
-    
     if not C_USER or not XS:
-        print("ERROR CRÍTICO: Faltan las variables de entorno FB_C_USER o FB_XS.")
+        print(json.dumps({"error": "Faltan variables de entorno FB_C_USER o FB_XS"}))
         return
+
+    resultados = []
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -26,55 +27,52 @@ async def run_scraper():
         
         page = await context.new_page()
         url = "https://www.facebook.com/groups/1561165307960664/"
-        print(f"Navegando al grupo: {url}")
         
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            
-            print("Cerrando posibles pop-ups invisibles...")
             await page.keyboard.press("Escape")
             await asyncio.sleep(2)
             
-            print("Esperando activamente a que Facebook inyecte las publicaciones reales (máximo 30s)...")
-            
-            # EL TRUCO: Facebook siempre pone 2 esqueletos. Esperamos a que haya más de 2.
             try:
                 await page.wait_for_function(
                     "() => document.querySelectorAll('div[role=\"article\"]').length > 2", 
                     timeout=30000
                 )
             except:
-                print("Aviso: El feed tardó demasiado. Intentando extraer lo que haya...")
+                pass
 
-            # Hacemos múltiples scrolls suaves para despertar el contenido de los alquileres/ventas
             for _ in range(3):
                 await page.evaluate("window.scrollBy(0, 1000)")
                 await asyncio.sleep(2)
-            
-            titulo = await page.title()
-            print(f"Título detectado: {titulo}")
 
             posts = await page.query_selector_all("div[role='article']")
-            print(f"Total de contenedores detectados: {len(posts)}")
 
-            if len(posts) > 0:
-                print("\n--- EXTRAYENDO TEXTOS ---")
-                for i, post in enumerate(posts[:5]): 
-                    texto = await post.text_content()
-                    
-                    if texto and texto.strip():
-                        print(f"\n[PUBLICACIÓN {i+1}]")
-                        # Limpiamos los saltos de línea para que se lea mejor en el log
-                        texto_limpio = ' '.join(texto.split())
-                        print(texto_limpio[:400] + "...") 
-                    else:
-                        print(f"\n[PUBLICACIÓN {i+1}] -> (Descartada: Sigue siendo esqueleto vacío)")
+            for post in posts[:5]:
+                # Buscar y hacer clic en "Ver más" si existe
+                try:
+                    ver_mas_btn = await post.query_selector("div[role='button']:has-text('Ver más')")
+                    if ver_mas_btn:
+                        await ver_mas_btn.click(timeout=3000)
+                        await asyncio.sleep(1) # Pequeña pausa para que el texto se expanda
+                except:
+                    pass # Si no hay botón, continuamos
+
+                texto = await post.text_content()
+                
+                if texto and texto.strip():
+                    texto_limpio = ' '.join(texto.split())
+                    resultados.append({
+                        "origen": "Facebook Group",
+                        "contenido": texto_limpio
+                    })
+
+            # Imprimir el resultado final en formato JSON
+            print(json.dumps({"status": "success", "data": resultados}, ensure_ascii=False))
 
         except Exception as e:
-            print(f"Fallo en la ejecución: {e}")
+            print(json.dumps({"status": "error", "message": str(e)}))
         finally:
             await browser.close()
-            print("\nNavegador cerrado. Ciclo finalizado.")
 
 if __name__ == "__main__":
     asyncio.run(run_scraper())
