@@ -4,18 +4,20 @@ import json
 import requests
 from playwright.async_api import async_playwright
 
-C_USER = os.getenv("FB_C_USER")
-XS = os.getenv("FB_XS")
-
-# Reemplaza esto con la URL de tu Webhook de n8n
+# Tu URL del nodo de n8n
 WEBHOOK_URL = "AQUI_PONES_TU_URL_DE_N8N"
 
-async def run_scraper():
-    if not C_USER or not XS:
-        print(json.dumps({"error": "Faltan variables de entorno FB_C_USER o FB_XS"}))
-        return
+# URL base de la categoría de inmuebles con el parámetro de página listo
+BASE_URL = "https://clasipar.paraguay.com/inmuebles?page="
 
+async def run_scraper():
     resultados = []
+    
+    # Empecemos con 3 páginas para probar que n8n reciba bien los datos. 
+    # Luego puedes subir este número a 50 para sacar tus 1000 propiedades de golpe.
+    paginas_a_extraer = 3 
+    
+    print(f"Iniciando motor para Clasipar... Objetivo: {paginas_a_extraer} páginas")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -23,74 +25,68 @@ async def run_scraper():
             viewport={'width': 1920, 'height': 1080},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
-        
-        await context.add_cookies([
-            {"name": "c_user", "value": C_USER, "domain": ".facebook.com", "path": "/"},
-            {"name": "xs", "value": XS, "domain": ".facebook.com", "path": "/"}
-        ])
-        
         page = await context.new_page()
-        url = "https://www.facebook.com/groups/1561165307960664/"
-        
-        try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            await page.keyboard.press("Escape")
-            await asyncio.sleep(2)
+
+        for i in range(1, paginas_a_extraer + 1):
+            url = f"{BASE_URL}{i}"
+            print(f"\nNavegando a: {url}")
             
             try:
-                await page.wait_for_function(
-                    "() => document.querySelectorAll('div[role=\"article\"]').length > 2", 
-                    timeout=30000
-                )
-            except:
-                pass
+                # domcontentloaded es rapidísimo en sitios como Clasipar
+                await page.goto(url, wait_until="domcontentloaded", timeout=40000)
+                await asyncio.sleep(2) # Pausa de respeto para el servidor
 
-            for _ in range(3):
-                await page.evaluate("window.scrollBy(0, 1000)")
-                await asyncio.sleep(2)
-
-            posts = await page.query_selector_all("div[role='article']")
-
-            for post in posts[:5]:
-                # SOLUCIÓN "Ver más": Buscamos cualquier elemento que contenga el texto y le hacemos clic
-                try:
-                    botones = await post.locator("text='Ver más'").element_handles()
-                    for btn in botones:
-                        await btn.click(timeout=2000)
-                        await asyncio.sleep(1.5) # Damos tiempo a que la animación de Facebook despliegue el texto
-                except:
-                    pass
-
-                texto = await post.text_content()
+                # Clasipar suele envolver sus anuncios en la etiqueta <article> o contenedores con clase específica
+                anuncios = await page.query_selector_all("article, .list-item, .ad-listing") 
                 
-                if texto and texto.strip():
-                    texto_limpio = ' '.join(texto.split())
-                    # Filtramos los que siguen siendo esqueletos vacíos
-                    if len(texto_limpio) > 20: 
-                        resultados.append({
-                            "origen": "Facebook Group",
-                            "contenido": texto_limpio
-                        })
+                print(f"Anuncios detectados en página {i}: {len(anuncios)}")
 
-            payload = {
-                "status": "success", 
-                "total_extraido": len(resultados),
-                "data": resultados
-            }
-            
-            # Mostramos el JSON en consola para verificar
-            print(json.dumps(payload, ensure_ascii=False))
+                for anuncio in anuncios:
+                    try:
+                        # Sacamos el texto completo de la tarjeta (precio, título, ubicación)
+                        texto_crudo = await anuncio.text_content()
+                        
+                        # Extraemos el enlace para que puedas ir directo a la oferta desde n8n
+                        enlace_elemento = await anuncio.query_selector("a")
+                        enlace = await enlace_elemento.get_attribute("href") if enlace_elemento else ""
+                        
+                        if enlace and not enlace.startswith("http"):
+                            enlace = f"https://clasipar.paraguay.com{enlace}"
 
-            # ENVIAMOS A N8N
-            if WEBHOOK_URL != "AQUI_PONES_TU_URL_DE_N8N":
-                print(f"\nEnviando datos a n8n...")
-                response = requests.post(WEBHOOK_URL, json=payload)
-                print(f"Respuesta de n8n: {response.status_code}")
+                        if texto_crudo and texto_crudo.strip():
+                            texto_limpio = ' '.join(texto_crudo.split())
+                            # Descartamos basuras pequeñas
+                            if len(texto_limpio) > 20:
+                                resultados.append({
+                                    "origen": "Clasipar Inmuebles",
+                                    "contenido": texto_limpio,
+                                    "url": enlace
+                                })
+                    except:
+                        continue # Si una tarjeta individual falla, no detenemos todo el bot
 
-        except Exception as e:
-            print(json.dumps({"status": "error", "message": str(e)}))
-        finally:
-            await browser.close()
+            except Exception as e_pagina:
+                print(f"Aviso: La página {i} falló o no existe. ({str(e_pagina)})")
+                break # Rompemos el ciclo si llegamos al final de la paginación real
+
+        payload = {
+            "status": "success",
+            "total_extraido": len(resultados),
+            "data": resultados
+        }
+        
+        print(f"\n--- CICLO FINALIZADO ---")
+        print(f"Total de propiedades capturadas listas para tu fábrica: {len(resultados)}")
+        
+        # Enviamos el paquete a tu automatización
+        if WEBHOOK_URL != "AQUI_PONES_TU_URL_DE_N8N":
+            print(f"Disparando webhook hacia n8n...")
+            response = requests.post(WEBHOOK_URL, json=payload)
+            print(f"Respuesta del servidor n8n: {response.status_code}")
+        else:
+            print("AVISO: No pusiste tu WEBHOOK_URL, los datos solo se quedaron en consola.")
+
+        await browser.close()
 
 if __name__ == "__main__":
     asyncio.run(run_scraper())
