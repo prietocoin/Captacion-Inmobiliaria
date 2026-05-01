@@ -1,10 +1,14 @@
 import asyncio
 import os
 import json
+import requests
 from playwright.async_api import async_playwright
 
 C_USER = os.getenv("FB_C_USER")
 XS = os.getenv("FB_XS")
+
+# Reemplaza esto con la URL de tu Webhook de n8n
+WEBHOOK_URL = "AQUI_PONES_TU_URL_DE_N8N"
 
 async def run_scraper():
     if not C_USER or not XS:
@@ -48,26 +52,40 @@ async def run_scraper():
             posts = await page.query_selector_all("div[role='article']")
 
             for post in posts[:5]:
-                # Buscar y hacer clic en "Ver más" si existe
+                # SOLUCIÓN "Ver más": Buscamos cualquier elemento que contenga el texto y le hacemos clic
                 try:
-                    ver_mas_btn = await post.query_selector("div[role='button']:has-text('Ver más')")
-                    if ver_mas_btn:
-                        await ver_mas_btn.click(timeout=3000)
-                        await asyncio.sleep(1) # Pequeña pausa para que el texto se expanda
+                    botones = await post.locator("text='Ver más'").element_handles()
+                    for btn in botones:
+                        await btn.click(timeout=2000)
+                        await asyncio.sleep(1.5) # Damos tiempo a que la animación de Facebook despliegue el texto
                 except:
-                    pass # Si no hay botón, continuamos
+                    pass
 
                 texto = await post.text_content()
                 
                 if texto and texto.strip():
                     texto_limpio = ' '.join(texto.split())
-                    resultados.append({
-                        "origen": "Facebook Group",
-                        "contenido": texto_limpio
-                    })
+                    # Filtramos los que siguen siendo esqueletos vacíos
+                    if len(texto_limpio) > 20: 
+                        resultados.append({
+                            "origen": "Facebook Group",
+                            "contenido": texto_limpio
+                        })
 
-            # Imprimir el resultado final en formato JSON
-            print(json.dumps({"status": "success", "data": resultados}, ensure_ascii=False))
+            payload = {
+                "status": "success", 
+                "total_extraido": len(resultados),
+                "data": resultados
+            }
+            
+            # Mostramos el JSON en consola para verificar
+            print(json.dumps(payload, ensure_ascii=False))
+
+            # ENVIAMOS A N8N
+            if WEBHOOK_URL != "AQUI_PONES_TU_URL_DE_N8N":
+                print(f"\nEnviando datos a n8n...")
+                response = requests.post(WEBHOOK_URL, json=payload)
+                print(f"Respuesta de n8n: {response.status_code}")
 
         except Exception as e:
             print(json.dumps({"status": "error", "message": str(e)}))
