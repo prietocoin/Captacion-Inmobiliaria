@@ -4,26 +4,27 @@ import json
 import requests
 from playwright.async_api import async_playwright
 
-# --- CONFIGURACIÓN DIRECTA POR IP ---
-# Usamos la IP interna/pública y el puerto para evitar fallos de DNS/Proxy
-IP_SERVIDOR = "192.64.115.249"
-PUERTO_N8N = "5678" 
-WEBHOOK_URL = f"http://automatizaciones_n8n:5678/webhook-test/clasipar-directo"
+# --- CONFIGURACIÓN DE CONEXIÓN INTERNA (EASYPANEL) ---
+# Usamos el nombre del servicio interno para que la red de Docker lo resuelva directamente
+NOMBRE_SERVICIO_N8N = "automatizaciones_n8n"
+PUERTO_INTERNO = "5678"
+WEBHOOK_URL = f"http://{NOMBRE_SERVICIO_N8N}:{PUERTO_INTERNO}/webhook-test/clasipar-directo"
 
 BASE_URL = "https://clasipar.paraguay.com/inmuebles?page="
 
 async def run_scraper():
     resultados = []
-    # Probemos con 10 páginas para asegurar que lleguen los datos
+    # Prueba controlada de 10 páginas
     paginas_a_extraer = 10 
     
+    # Filtro de competencia (Lista Negra)
     palabras_prohibidas = [
         "inmobiliaria", "remax", "century", "c21", "kw", "agente", 
-        "comisión", "broker", "asesor", "bienes raíces"
+        "comisión", "broker", "asesor", "bienes raíces", "inmobiliario"
     ]
     
-    print(f"🚀 Iniciando captura táctica (Prueba de {paginas_a_extraer} páginas)")
-    print(f"📡 Apuntando a: {WEBHOOK_URL}")
+    print(f"🚀 Iniciando captura táctica en Clasipar...")
+    print(f"📡 Destino interno: {WEBHOOK_URL}")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -36,8 +37,9 @@ async def run_scraper():
         for i in range(1, paginas_a_extraer + 1):
             url = f"{BASE_URL}{i}"
             try:
+                # Tiempo de espera optimizado para el servidor
                 await page.goto(url, wait_until="domcontentloaded", timeout=40000)
-                await asyncio.sleep(1.5) 
+                await asyncio.sleep(1) 
 
                 anuncios = await page.query_selector_all("article, .list-item, .ad-listing") 
                 
@@ -54,33 +56,38 @@ async def run_scraper():
                             texto_limpio = ' '.join(texto_crudo.split())
                             texto_minusculas = texto_limpio.lower()
                             
-                            # Filtro de dueños directos
+                            # Si no contiene palabras prohibidas, es un diamante (dueño directo)
                             if not any(p in texto_minusculas for p in palabras_prohibidas):
                                 if len(texto_limpio) > 35:
                                     resultados.append({
                                         "contenido": texto_limpio,
-                                        "url": enlace
+                                        "url": enlace,
+                                        "origen": "Clasipar Directo"
                                     })
                     except:
                         continue
                 
-                print(f"✅ Página {i} lista. Total acumulado: {len(resultados)}")
+                print(f"✅ Página {i} revisada. Diamantes acumulados: {len(resultados)}")
 
             except Exception as e:
-                print(f"❌ Error en pág {i}: {e}")
+                print(f"❌ Error en página {i}: {e}")
                 break
 
-        # --- ENVÍO DE DATOS ---
+        # --- ENVÍO AL WEBHOOK DE N8N ---
         if resultados:
-            print(f"📦 Enviando {len(resultados)} diamantes a n8n...")
+            print(f"📦 Enviando {len(resultados)} propiedades a la fábrica de contenido...")
             try:
-                # Aumentamos el timeout del envío a 60 segundos
+                # Enviamos el JSON con un timeout de 60 segundos
                 response = requests.post(WEBHOOK_URL, json=resultados, timeout=60)
                 print(f"📡 Respuesta de n8n: {response.status_code}")
+                if response.status_code == 200:
+                    print("🎉 ¡Datos entregados con éxito!")
+                else:
+                    print(f"⚠️ n8n recibió los datos pero respondió: {response.text}")
             except Exception as e_send:
-                print(f"❌ Error crítico de conexión: {e_send}")
+                print(f"❌ Falló el envío por la red interna: {e_send}")
         else:
-            print("⚠️ No se encontraron propiedades que pasaran el filtro.")
+            print("⚠️ El filtro fue muy estricto y no quedaron propiedades para enviar.")
 
         await browser.close()
 
