@@ -4,104 +4,59 @@ import json
 import requests
 from playwright.async_api import async_playwright
 
-# --- CONFIGURACIÓN DE TU FÁBRICA DE CONTENIDO ---
-# Cambia a la URL de producción cuando verifiques que los datos llegan bien
+# URL de TEST (Asegúrate de darle a "Listen for test event" en n8n)
 WEBHOOK_URL = "https://n8n.jairokov.com/webhook-test/clasipar-directo"
-
-# URL base de Inmuebles en Clasipar
 BASE_URL = "https://clasipar.paraguay.com/inmuebles?page="
 
 async def run_scraper():
     resultados = []
-    # 60 páginas x ~17 diamantes por página ≈ 1000 propiedades
-    paginas_a_extraer = 60 
+    paginas_a_extraer = 10 # Bajamos a 10 para depuración rápida
     
-    # LISTA NEGRA: Filtro para eliminar competencia e inmobiliarias
     palabras_prohibidas = [
         "inmobiliaria", "inmobiliario", "remax", "re/max", "century", "c21", 
         "keller williams", "kw", "agente", "comisión", "comision", 
         "bienes raíces", "bienes raices", "broker", "franquicia", "asesor"
     ]
     
-    print(f"🚀 Iniciando Cazador de Dueños Directos...")
-    print(f"Objetivo: {paginas_a_extraer} páginas | Webhook: {WEBHOOK_URL}")
+    print(f"🕵️ Iniciando prueba de 10 páginas...")
 
     async with async_playwright() as p:
-        # Lanzamos el navegador de forma eficiente
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
+        context = await browser.new_context(viewport={'width': 1920, 'height': 1080})
         page = await context.new_page()
 
         for i in range(1, paginas_a_extraer + 1):
             url = f"{BASE_URL}{i}"
-            
             try:
-                # Navegación rápida con tiempo de espera prudencial
                 await page.goto(url, wait_until="domcontentloaded", timeout=40000)
-                await asyncio.sleep(1.5) # Pausa técnica para no saturar el servidor
-
-                # Detectamos todos los contenedores de anuncios
+                await asyncio.sleep(1) 
                 anuncios = await page.query_selector_all("article, .list-item, .ad-listing") 
                 
-                if not anuncios:
-                    print(f"⚠️ No se encontraron más anuncios en la página {i}. Finalizando.")
-                    break
-
                 for anuncio in anuncios:
-                    try:
-                        # Extraemos el texto para aplicar el filtro
-                        texto_crudo = await anuncio.text_content()
-                        
-                        # Extraemos el enlace directo a la propiedad
-                        enlace_elemento = await anuncio.query_selector("a")
-                        enlace = await enlace_elemento.get_attribute("href") if enlace_elemento else ""
-                        if enlace and not enlace.startswith("http"):
-                            enlace = f"https://clasipar.paraguay.com{enlace}"
-
-                        if texto_crudo and texto_crudo.strip():
-                            texto_limpio = ' '.join(texto_crudo.split())
-                            texto_minusculas = texto_limpio.lower()
-                            
-                            # FILTRO TÁCTICO: ¿Es dueño directo?
-                            if any(palabra in texto_minusculas for palabra in palabras_prohibidas):
-                                continue # Es competencia, lo ignoramos
-                                
-                            # Si pasa el filtro, lo agregamos al lote
+                    texto_crudo = await anuncio.text_content()
+                    if texto_crudo:
+                        texto_limpio = ' '.join(texto_crudo.split())
+                        if not any(p in texto_limpio.lower() for p in palabras_prohibidas):
                             if len(texto_limpio) > 30:
-                                resultados.append({
-                                    "origen": "Clasipar Directo",
-                                    "contenido": texto_limpio,
-                                    "url": enlace,
-                                    "pagina_fuente": i
-                                })
-                    except:
-                        continue 
-                
-                print(f"✅ Página {i} procesada. Acumulado: {len(resultados)} diamantes.")
-
+                                resultados.append({"contenido": texto_limpio})
             except Exception as e:
-                print(f"❌ Error en página {i}: {str(e)}")
-                break 
+                print(f"Error pág {i}: {e}")
+                break
 
-        # --- ENVÍO DE DATOS A N8N ---
-        payload = {
-            "status": "success",
-            "total_extraido": len(resultados),
-            "data": resultados
-        }
-        
-        print(f"\n--- EXTRACCIÓN FINALIZADA ---")
-        print(f"Propiedades listas para n8n: {len(resultados)}")
+        # DEPUREMOS EL ENVÍO
+        if not resultados:
+            print("⚠️ No se encontraron diamantes en estas 10 páginas. El filtro es muy estricto.")
+            return
+
+        print(f"📦 Enviando {len(resultados)} propiedades a n8n...")
         
         try:
-            print(f"Enviando lote de datos a {WEBHOOK_URL}...")
-            response = requests.post(WEBHOOK_URL, json=payload, timeout=30)
+            # Enviamos como una lista simple para que n8n la entienda mejor
+            response = requests.post(WEBHOOK_URL, json=resultados, timeout=30)
             print(f"Respuesta de n8n: {response.status_code}")
+            print(f"Cuerpo de respuesta: {response.text}")
         except Exception as e_send:
-            print(f"❌ Falló el envío al Webhook: {str(e_send)}")
+            print(f"❌ Error de red: {e_send}")
 
         await browser.close()
 
