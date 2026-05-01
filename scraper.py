@@ -8,24 +8,27 @@ async def run_scraper():
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         
-        # FORMA CORRECTA DE APLICAR STEALTH
+        # Aplicamos el modo stealth
         await stealth_async(page) 
 
+        # Intentamos entrar a la búsqueda de Barrio Jara
         url = "https://www.facebook.com/groups/inmobiliariaparaguay/search/?q=Barrio%20Jara"
         
         print(f"Abriendo: {url}")
         await page.goto(url)
-        await asyncio.sleep(5)
+        await asyncio.sleep(10) # Damos tiempo extra para cargar
 
+        # Buscamos los posts
         posts = await page.query_selector_all("div[role='article']")
         
-        if not posts:
-            print("No se encontraron posts. Probablemente Facebook pide login.")
-        
-        for i, post in enumerate(posts[:5]):
-            texto = await post.inner_text()
-            print(f"--- POST {i+1} ---")
-            print(texto[:200])
+        if len(posts) == 0:
+            print("No se encontraron publicaciones. Es probable que Facebook pida login.")
+        else:
+            print(f"¡Éxito! Se encontraron {len(posts)} publicaciones.")
+            for i, post in enumerate(posts[:3]):
+                texto = await post.inner_text()
+                print(f"--- POST {i+1} ---")
+                print(texto[:150])
 
         await browser.close()
 
