@@ -14,8 +14,6 @@ async def run_scraper():
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        
-        # SOLUCIÓN 1: Simulamos un monitor Full HD para que Facebook no colapse el diseño
         context = await browser.new_context(
             viewport={'width': 1920, 'height': 1080},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -31,14 +29,27 @@ async def run_scraper():
         print(f"Navegando al grupo: {url}")
         
         try:
-            await page.goto(url, wait_until="networkidle", timeout=60000)
+            await page.goto(url, wait_until="domcontentloaded", timeout=60000)
             
-            print("Esperando 10 segundos a que los esqueletos de carga desaparezcan...")
-            await asyncio.sleep(10) 
+            print("Cerrando posibles pop-ups invisibles...")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(2)
             
-            # Scroll agresivo para despertar el contenido de React
-            await page.evaluate("window.scrollBy(0, 800)")
-            await asyncio.sleep(5)
+            print("Esperando activamente a que Facebook inyecte las publicaciones reales (máximo 30s)...")
+            
+            # EL TRUCO: Facebook siempre pone 2 esqueletos. Esperamos a que haya más de 2.
+            try:
+                await page.wait_for_function(
+                    "() => document.querySelectorAll('div[role=\"article\"]').length > 2", 
+                    timeout=30000
+                )
+            except:
+                print("Aviso: El feed tardó demasiado. Intentando extraer lo que haya...")
+
+            # Hacemos múltiples scrolls suaves para despertar el contenido de los alquileres/ventas
+            for _ in range(3):
+                await page.evaluate("window.scrollBy(0, 1000)")
+                await asyncio.sleep(2)
             
             titulo = await page.title()
             print(f"Título detectado: {titulo}")
@@ -48,16 +59,16 @@ async def run_scraper():
 
             if len(posts) > 0:
                 print("\n--- EXTRAYENDO TEXTOS ---")
-                for i, post in enumerate(posts[:5]): # Ampliamos a 5 para más seguridad
-                    # SOLUCIÓN 2: text_content() extrae todo sin importar si está visible u oculto
+                for i, post in enumerate(posts[:5]): 
                     texto = await post.text_content()
                     
-                    # Limpiamos el texto para ver si realmente hay contenido
                     if texto and texto.strip():
                         print(f"\n[PUBLICACIÓN {i+1}]")
-                        print(texto.strip()[:400].replace('\n', ' // ')) 
+                        # Limpiamos los saltos de línea para que se lea mejor en el log
+                        texto_limpio = ' '.join(texto.split())
+                        print(texto_limpio[:400] + "...") 
                     else:
-                        print(f"\n[PUBLICACIÓN {i+1}] -> (Descartada: Era un bloque de carga vacío)")
+                        print(f"\n[PUBLICACIÓN {i+1}] -> (Descartada: Sigue siendo esqueleto vacío)")
 
         except Exception as e:
             print(f"Fallo en la ejecución: {e}")
