@@ -4,20 +4,23 @@ import json
 import requests
 from playwright.async_api import async_playwright
 
-# Tu URL del nodo de n8n
+# Tu URL del nodo de n8n (¡No olvides cambiarla!)
 WEBHOOK_URL = "AQUI_PONES_TU_URL_DE_N8N"
 
-# URL base de la categoría de inmuebles con el parámetro de página listo
 BASE_URL = "https://clasipar.paraguay.com/inmuebles?page="
 
 async def run_scraper():
     resultados = []
+    paginas_a_extraer = 3 # Súbelo a 25 o 50 cuando confirmes que llega a n8n
     
-    # Empecemos con 3 páginas para probar que n8n reciba bien los datos. 
-    # Luego puedes subir este número a 50 para sacar tus 1000 propiedades de golpe.
-    paginas_a_extraer = 3 
+    # LA LISTA NEGRA: Palabras típicas de la competencia
+    palabras_prohibidas = [
+        "inmobiliaria", "inmobiliario", "remax", "re/max", "century", "c21", 
+        "keller williams", "kw", "agente", "comisión", "comision", 
+        "bienes raíces", "bienes raices", "broker", "franquicia"
+    ]
     
-    print(f"Iniciando motor para Clasipar... Objetivo: {paginas_a_extraer} páginas")
+    print(f"Iniciando cazador de dueños directos... Objetivo: {paginas_a_extraer} páginas")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -29,45 +32,49 @@ async def run_scraper():
 
         for i in range(1, paginas_a_extraer + 1):
             url = f"{BASE_URL}{i}"
-            print(f"\nNavegando a: {url}")
+            print(f"\nRevisando página {i}...")
             
             try:
-                # domcontentloaded es rapidísimo en sitios como Clasipar
                 await page.goto(url, wait_until="domcontentloaded", timeout=40000)
-                await asyncio.sleep(2) # Pausa de respeto para el servidor
+                await asyncio.sleep(2) 
 
-                # Clasipar suele envolver sus anuncios en la etiqueta <article> o contenedores con clase específica
                 anuncios = await page.query_selector_all("article, .list-item, .ad-listing") 
                 
-                print(f"Anuncios detectados en página {i}: {len(anuncios)}")
+                anuncios_filtrados_pagina = 0
 
                 for anuncio in anuncios:
                     try:
-                        # Sacamos el texto completo de la tarjeta (precio, título, ubicación)
                         texto_crudo = await anuncio.text_content()
                         
-                        # Extraemos el enlace para que puedas ir directo a la oferta desde n8n
                         enlace_elemento = await anuncio.query_selector("a")
                         enlace = await enlace_elemento.get_attribute("href") if enlace_elemento else ""
-                        
                         if enlace and not enlace.startswith("http"):
                             enlace = f"https://clasipar.paraguay.com{enlace}"
 
                         if texto_crudo and texto_crudo.strip():
                             texto_limpio = ' '.join(texto_crudo.split())
-                            # Descartamos basuras pequeñas
+                            texto_minusculas = texto_limpio.lower()
+                            
+                            # FILTRO NEGATIVO: Si alguna palabra prohibida está en el texto, saltamos al siguiente
+                            if any(palabra in texto_minusculas for palabra in palabras_prohibidas):
+                                continue # Ignora a la competencia
+                                
+                            # Si pasó el filtro y tiene contenido real, lo guardamos
                             if len(texto_limpio) > 20:
                                 resultados.append({
-                                    "origen": "Clasipar Inmuebles",
+                                    "origen": "Clasipar Directo",
                                     "contenido": texto_limpio,
                                     "url": enlace
                                 })
+                                anuncios_filtrados_pagina += 1
                     except:
-                        continue # Si una tarjeta individual falla, no detenemos todo el bot
+                        continue 
+                
+                print(f"-> Diamantes (Dueño Directo) encontrados aquí: {anuncios_filtrados_pagina}")
 
             except Exception as e_pagina:
-                print(f"Aviso: La página {i} falló o no existe. ({str(e_pagina)})")
-                break # Rompemos el ciclo si llegamos al final de la paginación real
+                print(f"Aviso: Fallo en página {i} ({str(e_pagina)})")
+                break 
 
         payload = {
             "status": "success",
@@ -75,16 +82,15 @@ async def run_scraper():
             "data": resultados
         }
         
-        print(f"\n--- CICLO FINALIZADO ---")
-        print(f"Total de propiedades capturadas listas para tu fábrica: {len(resultados)}")
+        print(f"\n--- EXTRACCIÓN LIMPIA FINALIZADA ---")
+        print(f"Total de dueños directos capturados: {len(resultados)}")
         
-        # Enviamos el paquete a tu automatización
         if WEBHOOK_URL != "AQUI_PONES_TU_URL_DE_N8N":
-            print(f"Disparando webhook hacia n8n...")
+            print(f"Enviando oro puro a n8n...")
             response = requests.post(WEBHOOK_URL, json=payload)
-            print(f"Respuesta del servidor n8n: {response.status_code}")
+            print(f"Respuesta de n8n: {response.status_code}")
         else:
-            print("AVISO: No pusiste tu WEBHOOK_URL, los datos solo se quedaron en consola.")
+            print("AVISO: Falta tu WEBHOOK_URL.")
 
         await browser.close()
 
