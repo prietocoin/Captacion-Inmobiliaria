@@ -8,7 +8,7 @@ from playwright.async_api import async_playwright
 # Usamos la IP interna/pública y el puerto para evitar fallos de DNS/Proxy
 IP_SERVIDOR = "192.64.115.249"
 PUERTO_N8N = "5678" 
-WEBHOOK_URL = f"http://{IP_SERVIDOR}:{PUERTO_N8N}/webhook-test/clasipar-directo"
+WEBHOOK_URL = f"http://automatizaciones_n8n:5678/webhook-test/clasipar-directo"
 
 BASE_URL = "https://clasipar.paraguay.com/inmuebles?page="
 
