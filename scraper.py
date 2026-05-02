@@ -1,85 +1,86 @@
 import asyncio
 import requests
+import re
 from playwright.async_api import async_playwright
 
-# --- CONFIGURACIÓN DE RED INTERNA EASYPANEL ---
-# Usamos el nombre del servicio interno y el ID exacto de tu webhook
+# Configuración del Webhook
 WEBHOOK_URL = "http://automatizaciones_n8n:5678/webhook-test/189b1141-6f1f-4ba8-b460-d7e31998bbdb"
 
-BASE_URL = "https://clasipar.paraguay.com/inmuebles?page="
+# Whitelist Táctica de 20 Zonas (Summit 2024 + Pedidos Jairo)
+ZONAS_CALIENTES = [
+    "barrio jara", "las lomas", "molas lopez", "ytay", "ycua sati", 
+    "manora", "recoleta", "villa morra", "herrera", "mburucuya", 
+    "trinidad", "laureles", "mburicao", "san cristobal", "villa aurelia", 
+    "luque", "san bernardino", "fernando de la mora", "san lorenzo", "mariano roque alonso"
+]
+
+def limpiar_telefono(texto):
+    # Extrae solo los dígitos
+    numeros = re.sub(r'\D', '', texto)
+    # Formato Internacional Paraguay para Meta Ads
+    if numeros.startswith('09'):
+        return '595' + numeros[1:]
+    if numeros.startswith('9'):
+        return '595' + numeros
+    return numeros
 
 async def run_scraper():
     resultados = []
-    paginas_a_extraer = 10 
+    paginas = 20 
     
-    # Filtro para asegurar que sean Dueños Directos
-    palabras_prohibidas = [
-        "inmobiliaria", "remax", "century", "c21", "kw", "agente", 
-        "comisión", "broker", "asesor", "bienes raíces", "inmobiliario"
-    ]
-    
-    print(f"🚀 Iniciando captura masiva en Clasipar...")
-    print(f"📡 Enviando a n8n por red interna...")
+    print(f"🚀 Iniciando barrido de {paginas} páginas en zonas de alta captación...")
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        # Usamos un User Agent real para evitar que Clasipar bloquee la conexión
         context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
         page = await context.new_page()
 
-        for i in range(1, paginas_a_extraer + 1):
-            url = f"{BASE_URL}{i}"
+        for i in range(1, paginas + 1):
+            url = f"https://clasipar.paraguay.com/inmuebles?page={i}"
             try:
-                # Aumentamos el tiempo de espera a 60s por si la web está lenta
                 await page.goto(url, wait_until="domcontentloaded", timeout=60000)
-                await asyncio.sleep(2) 
-
-                anuncios = await page.query_selector_all("article, .list-item, .ad-listing") 
+                await asyncio.sleep(2) # Pausa de seguridad para evitar bloqueos de IP
+                
+                anuncios = await page.query_selector_all("article, .list-item") 
                 
                 for anuncio in anuncios:
-                    try:
-                        texto_crudo = await anuncio.text_content()
-                        enlace_elemento = await anuncio.query_selector("a")
-                        enlace = await enlace_elemento.get_attribute("href") if enlace_elemento else ""
+                    texto_crudo = await anuncio.text_content()
+                    if texto_crudo:
+                        texto = ' '.join(texto_crudo.split()).lower()
                         
-                        if enlace and not enlace.startswith("http"):
-                            enlace = f"https://clasipar.paraguay.com{enlace}"
-
-                        if texto_crudo and texto_crudo.strip():
-                            texto_limpio = ' '.join(texto_crudo.split())
-                            
-                            # Filtro táctico de "Dueño Directo"
-                            if not any(p in texto_limpio.lower() for p in palabras_prohibidas):
-                                if len(texto_limpio) > 40:
+                        # Filtro 1: Que pertenezca a tus 20 zonas calientes
+                        if any(zona in texto for zona in ZONAS_CALIENTES):
+                            # Filtro 2: Excluir competencia directa
+                            if not any(exp in texto for i, exp in enumerate(["remax", "century", "c21", "agente", "inmobiliaria"])):
+                                
+                                # Extracción de Teléfono
+                                match_tel = re.search(r'09\d{2}\s?\d{3}\s?\d{3}', texto_crudo)
+                                if match_tel:
+                                    tel_limpio = limpiar_telefono(match_tel.group())
+                                    
                                     resultados.append({
-                                        "contenido": texto_limpio,
-                                        "url": enlace,
-                                        "origen": "Clasipar Directo"
+                                        "telefono_meta": tel_limpio,
+                                        "zona_detectada": next((z for z in ZONAS_CALIENTES if z in texto), "otra"),
+                                        "origen": "Clasipar Directo",
+                                        "es_caliente": True
                                     })
-                    except:
-                        continue
                 
-                print(f"✅ Página {i} completada. Diamantes acumulados: {len(resultados)}")
-
+                print(f"✅ Página {i} procesada. Prospectos acumulados: {len(resultados)}")
             except Exception as e:
-                print(f"⚠️ Salto en página {i} por demora: {e}")
-                continue 
+                print(f"⚠️ Error en pág {i}: {e}")
+                continue
 
-        # --- ENVÍO FINAL A N8N ---
+        # Envío de datos a n8n para el Retargeting de Autoridad
         if resultados:
-            print(f"📦 Enviando {len(resultados)} propiedades a n8n...")
+            print(f"📦 Enviando {len(resultados)} números a n8n...")
             try:
                 response = requests.post(WEBHOOK_URL, json=resultados, timeout=60)
-                print(f"📡 Respuesta de n8n: {response.status_code}")
-                if response.status_code == 200:
-                    print("🎉 ¡Éxito! Los datos ya están en tu flujo de n8n.")
+                print(f"📡 Respuesta n8n: {response.status_code}")
             except Exception as e_send:
-                print(f"❌ Error de conexión interna: {e_send}")
-        else:
-            print("⚠️ No se encontraron propiedades que pasaran el filtro.")
-
+                print(f"❌ Error de conexión: {e_send}")
+        
         await browser.close()
 
 if __name__ == "__main__":
