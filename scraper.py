@@ -3,9 +3,10 @@ import requests
 import re
 from playwright.async_api import async_playwright
 
+# Configuración del Webhook
 WEBHOOK_URL = "http://automatizaciones_n8n:5678/webhook-test/189b1141-6f1f-4ba8-b460-d7e31998bbdb"
 
-# Whitelist basada en el Kirkoff y tus pedidos
+# Whitelist de zonas (Summit 2024 + Tus pedidos)[cite: 1]
 ZONAS_CALIENTES = [
     "barrio jara", "las lomas", "molas lopez", "ytay", "ycua sati", 
     "manora", "recoleta", "villa morra", "herrera", "mburucuya", 
@@ -23,15 +24,55 @@ def limpiar_telefono(texto):
 
 async def run_scraper():
     resultados = []
-    # Mantenemos 20 páginas para asegurar calidad
-    for i in range(1, 21):
-        print(f"🕵️ Escaneando página {i}...")
-        # ... (lógica de navegación Playwright igual que antes)
-        
-        # --- EL CAMBIO ESTÁ AQUÍ ---
-        # Solo guardamos si hay una coincidencia CLARA con la zona
-        if any(f" {zona} " in f" {texto_limpio} " for zona in ZONAS_CALIENTES):
-            # Verificación extra: Que NO sea inmobiliaria
-            if not any(excluir in texto_limpio for excluir in ["remax", "century", "c21", "agente"]):
-                # Extraer teléfono y agregar a resultados
-                # ...
+    paginas_a_revisar = 20 
+    
+    print(f"🚀 Iniciando captura táctica (20 páginas)...")
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
+        page = await context.new_page()
+
+        for i in range(1, paginas_a_revisar + 1):
+            try:
+                await page.goto(f"https://clasipar.paraguay.com/inmuebles?page={i}", wait_until="domcontentloaded", timeout=60000)
+                await asyncio.sleep(2) # Seguridad
+                
+                anuncios = await page.query_selector_all("article, .list-item") 
+                
+                for anuncio in anuncios:
+                    texto_crudo = await anuncio.text_content()
+                    if texto_crudo:
+                        # Limpiamos el texto para el filtro
+                        t = ' '.join(texto_crudo.split()).lower()
+                        
+                        # FILTRO ESTRICTO: Solo tus zonas y NO inmobiliarias
+                        es_zona_target = any(f" {zona} " in f" {t} " for zona in ZONAS_CALIENTES)
+                        es_inmobiliaria = any(ex in t for ex in ["remax", "century", "c21", "agente", "inmobiliaria", "propiedades"])
+                        
+                        if es_zona_target and not es_inmobiliaria:
+                            match_tel = re.search(r'09\d{2}\s?\d{3}\s?\d{3}', texto_crudo)
+                            if match_tel:
+                                tel = limpiar_telefono(match_tel.group())
+                                resultados.append({
+                                    "telefono_meta": tel,
+                                    "zona": next((z for z in ZONAS_CALIENTES if z in t), "Asunción"),
+                                    "contenido": t[:150], # Para que veas qué captó
+                                    "origen": "Clasipar Directo"
+                                })
+                print(f"✅ Página {i} lista. Prospectos: {len(resultados)}")
+            except Exception as e:
+                print(f"⚠️ Error en pág {i}: {e}")
+                continue
+
+        # Envío final a n8n
+        if resultados:
+            print(f"📦 Enviando {len(resultados)} diamantes a la base de retargeting...")
+            requests.post(WEBHOOK_URL, json=resultados, timeout=120)
+
+        await browser.close()
+
+if __name__ == "__main__":
+    asyncio.run(run_scraper())
